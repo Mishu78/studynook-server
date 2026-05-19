@@ -1,17 +1,26 @@
+// 💡 REQUIRED: Load environment configurations before anything else executes
+require("dotenv").config();
+
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion } = require("mongodb");
-const { ObjectId } = require("mongodb");
+const { ObjectId } = require("mongodb"); 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-const port = 5000;
+// Fallback gracefully if process.env.PORT isn't accessible
+const port = process.env.PORT || 5000;
 
 // MongoDB URI
-const uri =
-  "mongodb://studynook:7bC9HC3xsDti5FRY@ac-gvburne-shard-00-00.r2vkn1a.mongodb.net:27017,ac-gvburne-shard-00-01.r2vkn1a.mongodb.net:27017,ac-gvburne-shard-00-02.r2vkn1a.mongodb.net:27017/?ssl=true&replicaSet=atlas-umwtiy-shard-0&authSource=admin&appName=Cluster0";
+const uri = process.env.MONGODB_URI;
+
+// Quick developer check to warn you early if configuration is broken
+if (!uri) {
+  console.error("FATAL ERROR: MONGODB_URI is not defined in your environment!");
+  process.exit(1);
+}
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -23,39 +32,64 @@ const client = new MongoClient(uri, {
 
 let roomsCollection;
 
-
+// Root testing endpoint
 app.get("/", (req, res) => {
   res.send("SERVER WORKING PERFECTLY");
 });
 
+// Fetch all rooms
 app.get('/rooms', async (req, res) => {
-  const result = await roomsCollection.find().toArray();
-  res.send(result);
+  try {
+    const result = await roomsCollection.find().toArray();
+    res.send(result);
+  } catch (error) {
+    console.error("Error fetching rooms:", error);
+    res.status(500).send({ error: "Failed to fetch rooms" });
+  }
 });
 
-  app.get('/featured-rooms', async (req, res) => {
+// Fetch featured rooms (limited to 6)
+app.get('/featured-rooms', async (req, res) => {
   try {
-    // 💡 Add 6 inside the limit parameter
     const cursor = roomsCollection.find().limit(6);
     const result = await cursor.toArray();
     res.send(result);
   } catch (error) {
-    console.error(error);
+    console.error("Error fetching featured rooms:", error);
     res.status(500).send({ error: "Failed to fetch featured rooms" });
   }
 });
     
+// Fetch single room details by ID (Handles both custom string IDs and ObjectIds)
 app.get('/rooms/:roomId', async (req, res) => {
-  console.log("PARAM:", req.params.roomId);
+  try {
+    console.log("PARAM RECEIVED:", req.params.roomId);
+    const { roomId } = req.params;
 
-  const { roomId } = req.params;
+    let query = {};
+    
+    // Validate if the incoming roomId matches standard 24-char hex format
+    if (typeof roomId === 'string' && roomId.length === 24 && /^[0-9a-fA-F]+$/.test(roomId)) {
+      query = { _id: new ObjectId(roomId) };
+    } else {
+      // Fallback to matching standard raw string strings like "r004" or "r008"
+      query = { _id: roomId };
+    }
 
-  const result = await roomsCollection.findOne({ _id: roomId });
+    const result = await roomsCollection.findOne(query);
+    console.log("DATABASE RESULT:", result);
+    
+    if (!result) {
+      return res.status(404).send({ error: "Room not found in database" });
+    }
 
-  console.log("RESULT:", result);
-
-  res.send(result);
+    res.send(result);
+  } catch (error) {
+    console.error("Error matching room ID:", error);
+    res.status(500).send({ error: "Internal server error" });
+  }
 });
+
 // CONNECT MONGODB SAFELY
 async function connectDB() {
   try {
