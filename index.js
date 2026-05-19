@@ -33,6 +33,18 @@ app.get('/rooms', async (req, res) => {
   res.send(result);
 });
 
+  app.get('/featured-rooms', async (req, res) => {
+  try {
+    // 💡 Add 6 inside the limit parameter
+    const cursor = roomsCollection.find().limit(6);
+    const result = await cursor.toArray();
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ error: "Failed to fetch featured rooms" });
+  }
+});
+    
 app.get('/rooms/:roomId', async (req, res) => {
   console.log("PARAM:", req.params.roomId);
 
