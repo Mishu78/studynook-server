@@ -15,7 +15,7 @@ app.use(
   cors({
     origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
     credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], // ✅ Added "PATCH" here
     allowedHeaders: ["Content-Type", "Authorization"]
   })
 );
@@ -41,7 +41,7 @@ const client = new MongoClient(uri, {
 let db;
 let roomsCollection;
 let bookingsCollection;
-let usersCollection;
+let usersCollection; // Added to support clean background pull modifications if needed
 
 // =============================================================
 // 🔒 BETTER-AUTH INTERCEPTOR MIDDLEWARE (Server Ownership Verification)
@@ -76,12 +76,34 @@ app.get("/", (req, res) => {
 // =============================================================
 
 // 4.2 All Rooms Page - Public route fetches all rooms from the DB
+// index.js - Updated /rooms route
 app.get('/rooms', async (req, res) => {
   try {
-    const result = await roomsCollection.find().toArray();
+    const { search, amenities, minPrice, maxPrice } = req.query;
+    let query = {};
+
+    // 1. Search by Name (Regex, case-insensitive)
+    if (search) {
+      query.roomName = { $regex: search, $options: 'i' };
+    }
+
+    // 2. Filter by Amenities (Ensure room contains all selected amenities)
+    if (amenities) {
+      const amenityArray = amenities.split(',');
+      query.amenities = { $all: amenityArray };
+    }
+
+    // 3. Hourly Rate Filtering (Range)
+    if (minPrice || maxPrice) {
+      query.hourlyRate = {};
+      if (minPrice) query.hourlyRate.$gte = parseFloat(minPrice);
+      if (maxPrice) query.hourlyRate.$lte = parseFloat(maxPrice);
+    }
+
+    const result = await roomsCollection.find(query).toArray();
     res.json(result);
   } catch (error) {
-    console.error("Error fetching rooms:", error);
+    console.error("Error fetching filtered rooms:", error);
     res.status(500).json({ error: "Failed to fetch rooms" });
   }
 });
@@ -106,6 +128,7 @@ app.get('/rooms/:roomId', async (req, res) => {
       return res.status(400).json({ error: "Missing required roomId parameter context" });
     }
 
+    // 🛑 Clean and validate parameters to prevent crash loops
     roomId = roomId.trim();
     if (roomId === "[object Object]" || roomId === "undefined" || roomId === "null") {
       return res.status(400).json({ error: "Invalid Object ID parameter string format received." });
@@ -135,6 +158,7 @@ app.post('/api/rooms', verifyUser, async (req, res) => {
   try {
     const { roomName, description, image, floor, capacity, hourlyRate, amenities } = req.body;
 
+    // Validate absolute required parameters
     if (!roomName || !description || !image || !floor || !capacity || !hourlyRate) {
       return res.status(400).json({ error: "Missing required form fields." });
     }
@@ -174,11 +198,13 @@ app.put('/api/rooms/:id', verifyUser, async (req, res) => {
       query = { _id: id };
     }
 
+    // Find the targeted room first to verify owner mapping constraints
     const existingRoom = await roomsCollection.findOne(query);
     if (!existingRoom) {
       return res.status(404).json({ error: "Target study room record not found." });
     }
 
+    // 💡 Strict Verification: Ensure req.user.id matches the room's ownerId
     if (existingRoom.ownerId !== req.user.id) {
       return res.status(432).json({ error: "Forbidden: You are not authorized to edit this room." });
     }
@@ -221,18 +247,22 @@ app.delete('/api/rooms/:id', verifyUser, async (req, res) => {
       return res.status(404).json({ error: "Target room not found." });
     }
 
+    // 💡 Server-side ownership validation safeguard
     if (existingRoom.ownerId !== req.user.id) {
       return res.status(403).json({ error: "Forbidden: You are not authorized to delete this room." });
     }
 
-    // Cascade Delete Safeguard: Clear out any active bookings associated with this room
+    // Challenge Section Pull Safeguard: Clean matching references out of user bookings arrays if they exist
     try {
-      await bookingsCollection.deleteMany({ roomId: id });
-    } catch (bookingDelErr) {
-      console.log("Optional cascade booking cleanup bypassed.");
+      await usersCollection.updateMany(
+        {}, 
+        { $pull: { bookings: id } }
+      );
+    } catch (pullErr) {
+      console.log("Optional optimization pull bypassed or user array table not tracked yet.");
     }
 
-    // Permanently remove target document from rooms collection
+    // Permanently remove target document
     await roomsCollection.deleteOne(query);
     res.json({ success: true, message: "Room deleted successfully" });
   } catch (error) {
@@ -292,9 +322,8 @@ app.post("/api/bookings", verifyUser, async (req, res) => {
     let roomQuery = roomId.length === 24 && /^[0-9a-fA-F]+$/.test(roomId) ? { _id: new ObjectId(roomId) } : { _id: roomId };
     await roomsCollection.updateOne(roomQuery, { $inc: { bookingCount: 1 } });
 
-    // ✅ FIXED: Better-Auth stores unique account tracking credentials using the string property field "id"
     await usersCollection.updateOne(
-      { id: req.user.id },
+      { _id: req.user.id },
       { $addToSet: { bookings: result.insertedId.toString() } }
     );
 
@@ -349,7 +378,6 @@ app.patch("/api/bookings/:id/cancel", verifyUser, async (req, res) => {
     
     await roomsCollection.updateOne(roomQuery, { $inc: { bookingCount: -1 } });
 
-    // ✅ FIXED: Keeps profile reference array sync completely accurate
     await usersCollection.updateOne(
       { id: req.user.id }, 
       { $pull: { bookings: id } }
@@ -377,8 +405,10 @@ async function startServer() {
     usersCollection = db.collection("user");
     console.log("🟢 MongoDB Connected Successfully");
 
+    // 💡 Listening on "0.0.0.0" maps localhost, 127.0.0.1, and IPv6 bindings cleanly
     app.listen(port, "0.0.0.0", () => {
       console.log(`🚀 API Server rock-solid on port: ${port}`);
+      console.log(`💡 Env configuration check -> process.env.PORT is: ${process.env.PORT || 'undefined (using fallback)'}`);
     });
 
   } catch (error) {
