@@ -69,9 +69,6 @@ app.get("/", (req, res) => {
   res.send("SERVER WORKING PERFECTLY");
 });
 
-// =============================================================
-// 📝 STUDY ROOMS CRUD ENDPOINTS
-// =============================================================
 
 // 4.2 All Rooms Page - Public route fetches all rooms from the DB
 // index.js - Updated /rooms route
