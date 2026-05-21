@@ -324,7 +324,7 @@ app.post("/api/bookings", verifyUser, async (req, res) => {
 
     await usersCollection.updateOne(
       { _id: req.user.id },
-      { $addToSet: { bookings: result.insertedId.toString() } }
+      { $push: { bookings: result.insertedId.toString() } }
     );
 
     res.status(201).json({ message: "Room booked successfully!", bookingId: result.insertedId });
@@ -379,9 +379,9 @@ app.patch("/api/bookings/:id/cancel", verifyUser, async (req, res) => {
     await roomsCollection.updateOne(roomQuery, { $inc: { bookingCount: -1 } });
 
     await usersCollection.updateOne(
-      { id: req.user.id }, 
-      { $pull: { bookings: id } }
-    );
+  { _id: req.user.id }, // ✅ Corrected from { id: req.user.id }
+  { $pull: { bookings: id } }
+);
 
     res.status(200).json({ message: "Booking cancelled successfully" });
   } catch (error) {
