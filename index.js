@@ -43,9 +43,7 @@ let roomsCollection;
 let bookingsCollection;
 let usersCollection; // Added to support clean background pull modifications if needed
 
-// =============================================================
-// 🔒 BETTER-AUTH INTERCEPTOR MIDDLEWARE (Server Ownership Verification)
-// =============================================================
+
 async function verifyUser(req, res, next) {
   try {
     // 💡 Better-Auth reads active browser contexts from the incoming request headers
@@ -271,10 +269,6 @@ app.delete('/api/rooms/:id', verifyUser, async (req, res) => {
   }
 });
 
-// =============================================================
-// 🗓️ BOOKINGS MANAGEMENT ENDPOINTS
-// =============================================================
-
 // 5.1 Book a Room (Private) - Secure Slot Booking with Conflict Validation
 app.post("/api/bookings", verifyUser, async (req, res) => {
   try {
@@ -390,15 +384,13 @@ app.patch("/api/bookings/:id/cancel", verifyUser, async (req, res) => {
   }
 });
 
-// =============================================================
-// 💡 FIXED BETTER-AUTH API HANDLER ROUTE
-// =============================================================
+
 app.all("/api/auth/*any", toNodeHandler(auth));
 
 // 💡 CONNECT MONGODB & START LISTENING
 async function startServer() {
   try {
-    await client.connect();
+    //await client.connect();
     db = client.db("studynook");
     roomsCollection = db.collection("rooms");
     bookingsCollection = db.collection("bookings");
