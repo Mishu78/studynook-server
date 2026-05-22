@@ -1,12 +1,13 @@
-// 💡 REQUIRED: Load environment configurations before anything else executes
-require("dotenv").config();
+import dotenv from "dotenv";
+dotenv.config();
 
-const express = require("express");
-const cors = require("cors");
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb"); 
-// 💡 Import your configured Better-Auth instance
-const { auth } = require("./lib/auth");
-const { toNodeHandler } = require("better-auth/node");
+import express from "express";
+import cors from "cors";
+import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+
+// 💡 Import your configured Better-Auth instance and its Node adapter
+import { auth } from "./lib/auth.js";
+import { toNodeHandler } from "better-auth/node";
 
 const app = express();
 
@@ -15,18 +16,56 @@ app.use(
   cors({
     origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
     credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], // ✅ Added "PATCH" here
-    allowedHeaders: ["Content-Type", "Authorization"]
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
 app.use(express.json());
 
-// 💡 Ensure we read your exact .env choice first (8080), falling back only if empty
-const port = process.env.PORT || 8080; 
+// =========================================================================
+// 💡 MOUNT BETTER-AUTH ROUTING HANDLER
+// =========================================================================
+app.all("/api/auth/*path", (req, res) => {
+  return toNodeHandler(auth)(req, res);
+});
+
+// =========================================================================
+// 💡 BETTER-AUTH SESSION INTERCEPTOR MIDDLEWARE
+// This safely extracts sessions and populates req.user for your private routes
+// =========================================================================
+const requireAuth = async (req, res, next) => {
+  try {
+    const session = await auth.api.getSession({
+      headers: req.headers,
+    });
+
+    if (!session || !session.user) {
+      return res.status(401).json({
+        error: "Unauthorized: Please log in first.",
+      });
+    }
+
+    req.user = session.user;
+
+    next();
+  } catch (err) {
+    console.error("Auth Session Middleware Error:", err);
+
+    return res.status(401).json({
+      error: "Session validation failed.",
+    });
+  }
+};
+
+// 💡 Ensure we read your exact .env choice first
+const port = process.env.PORT || 8080;
+
 const uri = process.env.MONGODB_URI;
 
 if (!uri) {
-  console.error("FATAL ERROR: MONGODB_URI is not defined in your environment!");
+  console.error("FATAL ERROR: MONGODB_URI is not defined!");
+
   process.exit(1);
 }
 
@@ -37,41 +76,17 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 });
-
 let db;
 let roomsCollection;
 let bookingsCollection;
-let usersCollection; // Added to support clean background pull modifications if needed
-
-
-async function verifyUser(req, res, next) {
-  try {
-    // 💡 Better-Auth reads active browser contexts from the incoming request headers
-    const session = await auth.api.getSession({
-      headers: req.headers,
-    });
-
-    if (!session || !session.user) {
-      return res.status(401).json({ error: "Unauthorized access. Please login first." });
-    }
-
-    // Attach user record to request object for downstream endpoint matching
-    req.user = session.user;
-    next();
-  } catch (error) {
-    console.error("Auth Middleware Error:", error);
-    res.status(500).json({ error: "Authentication system error" });
-  }
-}
+let usersCollection; 
 
 // Root testing endpoint
 app.get("/", (req, res) => {
   res.send("SERVER WORKING PERFECTLY");
 });
 
-
 // 4.2 All Rooms Page - Public route fetches all rooms from the DB
-// index.js - Updated /rooms route
 app.get('/rooms', async (req, res) => {
   try {
     const { search, amenities, minPrice, maxPrice } = req.query;
@@ -149,7 +164,7 @@ app.get('/rooms/:roomId', async (req, res) => {
 });
 
 // 4.1 Add Room Endpoint - Protected Private Route
-app.post('/api/rooms', verifyUser, async (req, res) => {
+app.post('/api/rooms', requireAuth, async (req, res) => {
   try {
     const { roomName, description, image, floor, capacity, hourlyRate, amenities } = req.body;
 
@@ -166,7 +181,7 @@ app.post('/api/rooms', verifyUser, async (req, res) => {
       capacity: Number(capacity),
       hourlyRate: Number(hourlyRate),
       amenities: Array.isArray(amenities) ? amenities : [],
-      ownerId: req.user.id,          // 💡 Bind room to owner's exact user ID string
+      ownerId: req.user.id,          // 💡 Securely binds room to owner's true authenticated user ID string
       ownerEmail: req.user.email,    // Extra helper field for easy frontend profile evaluation
       bookingCount: 0,               // 💡 Starts tracking at 0 allocations
       createdAt: new Date()
@@ -181,17 +196,17 @@ app.post('/api/rooms', verifyUser, async (req, res) => {
 });
 
 // 4.4 Update Room Endpoint - Private Route (Owner Verification Required)
-app.put('/api/rooms/:id', verifyUser, async (req, res) => {
+app.put('/api/rooms/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { roomName, description, image, floor, capacity, hourlyRate, amenities } = req.body;
 
     let query = {};
     if (id.length === 24 && /^[0-9a-fA-F]+$/.test(id)) {
-      query = { _id: new ObjectId(id) };
-    } else {
-      query = { _id: id };
-    }
+  query = { _id: new ObjectId(id) };
+} else {
+  query = { _id: id };
+}
 
     // Find the targeted room first to verify owner mapping constraints
     const existingRoom = await roomsCollection.findOne(query);
@@ -201,7 +216,7 @@ app.put('/api/rooms/:id', verifyUser, async (req, res) => {
 
     // 💡 Strict Verification: Ensure req.user.id matches the room's ownerId
     if (existingRoom.ownerId !== req.user.id) {
-      return res.status(432).json({ error: "Forbidden: You are not authorized to edit this room." });
+      return res.status(403).json({ error: "Forbidden: You are not authorized to edit this room." });
     }
 
     const updateFields = {
@@ -226,16 +241,17 @@ app.put('/api/rooms/:id', verifyUser, async (req, res) => {
 });
 
 // 4.5 Delete Room Endpoint - Private Route (Owner Verification Required)
-app.delete('/api/rooms/:id', verifyUser, async (req, res) => {
+app.delete('/api/rooms/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
-    let query = {};
-    if (id.length === 24 && /^[0-9a-fA-F]+$/.test(id)) {
-      query = { _id: new ObjectId(id) };
-    } else {
-      query = { _id: id };
-    }
+   let query = {};
+
+if (id.length === 24 && /^[0-9a-fA-F]+$/.test(id)) {
+  query = { _id: new ObjectId(id) };
+} else {
+  query = { _id: id };
+}
 
     const existingRoom = await roomsCollection.findOne(query);
     if (!existingRoom) {
@@ -267,7 +283,7 @@ app.delete('/api/rooms/:id', verifyUser, async (req, res) => {
 });
 
 // 5.1 Book a Room (Private) - Secure Slot Booking with Conflict Validation
-app.post("/api/bookings", verifyUser, async (req, res) => {
+app.post("/api/bookings", requireAuth, async (req, res) => {
   try {
     const { roomId, roomName, image, date, startTime, endTime, specialNote, totalCost, userEmail } = req.body;
 
@@ -279,11 +295,13 @@ app.post("/api/bookings", verifyUser, async (req, res) => {
 
     // CRITICAL CONFLICT CHECK
     const existingConflict = await bookingsCollection.findOne({
-      roomId: roomId,
-      date: date,
-      timeSlot: proposedTimeSlot,
-      status: "confirmed"
-    });
+  roomId: roomId.length === 24 && /^[0-9a-fA-F]+$/.test(roomId)
+    ? new ObjectId(roomId)
+    : roomId,
+  date,
+  timeSlot: proposedTimeSlot,
+  status: "confirmed",
+});
 
     if (existingConflict) {
       return res.status(409).json({ 
@@ -326,7 +344,7 @@ app.post("/api/bookings", verifyUser, async (req, res) => {
 });
 
 // 5.2 My Bookings Fetcher Route
-app.get("/api/bookings", verifyUser, async (req, res) => {
+app.get("/api/bookings", requireAuth, async (req, res) => {
   try {
     const { email } = req.query;
     
@@ -347,10 +365,15 @@ app.get("/api/bookings", verifyUser, async (req, res) => {
 });
 
 // 5.3 Cancel Booking (Private PATCH Route)
-app.patch("/api/bookings/:id/cancel", verifyUser, async (req, res) => {
+app.patch("/api/bookings/:id/cancel", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    let query = id.length === 24 && /^[0-9a-fA-F]+$/.test(id) ? { _id: new ObjectId(id) } : { _id: id };
+
+    // ✅ FIXED: roomId → id + correct condition
+    let query =
+      id.length === 24 && /^[0-9a-fA-F]+$/.test(id)
+        ? { _id: new ObjectId(id) }
+        : { _id: id };
 
     const bookingRecord = await bookingsCollection.findOne(query);
     if (!bookingRecord) {
@@ -363,16 +386,19 @@ app.patch("/api/bookings/:id/cancel", verifyUser, async (req, res) => {
 
     await bookingsCollection.updateOne(query, { $set: { status: "cancelled" } });
 
-    let roomQuery = bookingRecord.roomId.length === 24 && /^[0-9a-fA-F]+$/.test(bookingRecord.roomId) 
-      ? { _id: new ObjectId(bookingRecord.roomId) } 
-      : { _id: bookingRecord.roomId };
-    
+    let roomQuery =
+      bookingRecord.roomId.length === 24 &&
+      /^[0-9a-fA-F]+$/.test(bookingRecord.roomId)
+        ? { _id: new ObjectId(bookingRecord.roomId) }
+        : { _id: bookingRecord.roomId };
+
     await roomsCollection.updateOne(roomQuery, { $inc: { bookingCount: -1 } });
 
+    // ✅ FIXED: consistent string conversion
     await usersCollection.updateOne(
-  { _id: req.user.id }, // ✅ Corrected from { id: req.user.id }
-  { $pull: { bookings: id } }
-);
+      { _id: req.user.id },
+      { $pull: { bookings: id.toString() } }
+    );
 
     res.status(200).json({ message: "Booking cancelled successfully" });
   } catch (error) {
@@ -381,13 +407,10 @@ app.patch("/api/bookings/:id/cancel", verifyUser, async (req, res) => {
   }
 });
 
-
-app.all("/api/auth/*any", toNodeHandler(auth));
-
 // 💡 CONNECT MONGODB & START LISTENING
 async function startServer() {
   try {
-    //await client.connect();
+    await client.connect(); // Un-commented to establish clean standard MongoDB topology connections
     db = client.db("studynook");
     roomsCollection = db.collection("rooms");
     bookingsCollection = db.collection("bookings");
